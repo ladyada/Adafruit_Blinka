@@ -22,10 +22,19 @@ if microcontroller is not None:
     elif microcontroller == "pyboard":
         microcontroller = "stm32"
         board = "pyboard"
+    elif microcontroller == "linux":
+        from Adafruit_GPIO import Platform
+        if Platform.platform_detect() == Platform.RASPBERRY_PI:
+            if Platform.pi_version() == 1:
+                board = "raspi_1"
+            elif Platform.pi_version() == 2:
+                board = "raspi_2"
+            elif Platform.pi_version() == 3:
+                board = "raspi_3"
 
 implementation = sys.implementation.name
 if implementation == "micropython":
     from utime import sleep
-elif implementation == "circuitpython":
+elif implementation == "circuitpython" or implementation == "cpython":
     from time import sleep
 gc.collect()
