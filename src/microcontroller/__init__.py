@@ -1,5 +1,5 @@
 from adafruit_blinka import Enum, agnostic
-
+from adafruit_blinka.agnostic import board as boardId
 
 class Pin(Enum):
     def __init__(self, id):
@@ -22,7 +22,10 @@ if agnostic.microcontroller == "esp8266":
     from adafruit_blinka.microcontroller.esp8266 import *
 elif agnostic.microcontroller == "stm32":
     from adafruit_blinka.microcontroller.stm32 import *
-elif agnostic.microcontroller == "raspi_3":
-    from adafruit_blinka.microcontroller.raspi_23 import *
+elif agnostic.microcontroller == "linux":
+    if boardId == "raspi_3" or boardId == "raspi_2":
+        from adafruit_blinka.microcontroller.raspi_23 import *
+    else:
+        raise NotImplementedError("Board not supported: ", boardId)
 else:
     raise NotImplementedError("Microcontroller not supported: ", agnostic.microcontroller)
