@@ -1,5 +1,8 @@
-from machine import Pin
 from adafruit_blinka.agnostic import board as boardId
+if boardId == "raspi_3" or boardId == "raspi_2":
+    from adafruit_blinka.microcontroller.raspi_23.pin import Pin
+else:
+    from machine import Pin
 from adafruit_blinka import Enum, ContextManaged
 
 
