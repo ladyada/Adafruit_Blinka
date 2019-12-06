@@ -1,6 +1,27 @@
 import time
 import hid
 
+RESP_ERR_NOERR			=0x00
+RESP_ADDR_NACK			=0x25
+RESP_READ_ERR			=0x7F
+RESP_READ_COMPL			=0x55
+RESP_I2C_IDLE			=0x00
+RESP_I2C_START_TOUT		=0x12
+RESP_I2C_RSTART_TOUT	=0x17
+RESP_I2C_WRADDRL_TOUT	=0x23
+RESP_I2C_WRADDRL_WSEND	=0x21
+RESP_I2C_WRADDRL_NACK	=0x25
+RESP_I2C_WRDATA_TOUT	=0x44
+RESP_I2C_RDDATA_TOUT	=0x52
+RESP_I2C_STOP_TOUT		=0x62
+
+RESP_I2C_MOREDATA		=0x43 # ???
+RESP_I2C_WRITINGDATA    =0x41 # ???
+
+MCP2221_RETRY_MAX		=50
+MCP2221_MAX_I2C_DATA_LEN	=60
+MASK_ADDR_NACK		    =0x40
+
 class MCP2221:
 
     VID = 0x04D8
@@ -16,6 +37,8 @@ class MCP2221:
         self._hid = hid.device()
         self._hid.open(MCP2221.VID, MCP2221.PID)
         self._reset()
+        time.sleep(0.25)
+
 
     def _hid_xfer(self, report, response=True):
         # first byte is report ID, which =0 for MCP2221
@@ -122,23 +145,39 @@ class MCP2221:
     #   define RESP_I2C_RDDATA_TOUT    0x52
     #   define RESP_I2C_STOP_TOUT      0x62
     #----------------------------------------------------------------
+
     def _i2c_status(self):
-        return self._hid_xfer(b'\x10')[8]
+        resp = self._hid_xfer(b'\x10')
+        if resp[1] != 0:
+            raise RuntimeError("Couldn't get I2C status")
+        return resp
+
+    def _i2c_state(self):
+        resp = self._i2c_status()
+        #print("* I2C state:", hex(resp[8]))
+        return resp[8]
 
     def _i2c_cancel(self):
+        #print("* Cancel I2C")
         resp = self._hid_xfer(b'\x10\x00\x10')
+        if resp[1] != 0:
+            raise RuntimeError("Couldn't cancel I2C")
         if resp[2] == 0x10:
             # bus release will need "a few hundred microseconds"
             time.sleep(0.001)
 
     def _i2c_write(self, cmd, address, buffer, start=0, end=None):
-        if self._i2c_status():
+        #print("* Writing I2C:", hex(cmd), hex(address), len(buffer))
+        if self._i2c_state() != 0x00:
             self._i2c_cancel()
+
         end = end if end else len(buffer)
         length = end - start
         retries = 0
+
         while (end - start) > 0:
-            chunk = min(end - start, 60)
+            #print("Writing chunk starting at", start, "retry", retries)
+            chunk = min(end - start, MCP2221_MAX_I2C_DATA_LEN)
             # write out current chunk
             resp = self._hid_xfer(bytes([cmd,
                                          length & 0xFF,
@@ -147,13 +186,43 @@ class MCP2221:
                                          buffer[start:(start+chunk)])
             # check for success
             if resp[1] != 0x00:
+                if resp[2] in (RESP_I2C_START_TOUT,
+                               RESP_I2C_WRADDRL_TOUT,
+                               RESP_I2C_WRADDRL_NACK,
+                               RESP_I2C_WRDATA_TOUT,
+                               RESP_I2C_STOP_TOUT):
+                    raise RuntimeError("Unrecoverable I2C state failure")
                 retries += 1
-                if retries >= 5:
-                    raise RuntimeError("I2C write error, max retries reached.")
+                if retries >= MCP2221_RETRY_MAX:
+                    raise RuntimeError("I2C write error: max retries reached.")
                 time.sleep(0.001)
                 continue # try again
+            # yay chunk sent!
+            while self._i2c_state() == RESP_I2C_WRITINGDATA:
+                time.sleep(0.001)
             start += chunk
             retries = 0
+
+        # check status in another loop
+        for _ in range(MCP2221_RETRY_MAX):
+            status = self._i2c_status()
+            if status[20] & MASK_ADDR_NACK:
+                raise RuntimeError("I2C slave address was NACK'd")
+            usb_cmd_status = status[8]
+            #print("* USB cmd state:", hex(usb_cmd_status))
+            if usb_cmd_status == 0:
+                break
+            if usb_cmd_status in (RESP_I2C_START_TOUT,
+                                  RESP_I2C_WRADDRL_TOUT,
+                                  RESP_I2C_WRADDRL_NACK,
+                                  RESP_I2C_WRDATA_TOUT,
+                                  RESP_I2C_STOP_TOUT):
+                raise RuntimeError("Unrecoverable I2C state failure")
+            time.sleep(0.001)
+        else:
+            raise RuntimeError("I2C write error: max retries reached.")
+        # whew success!
+            
 
     def _i2c_read(self, cmd, address, buffer, start=0, end=None):
         if self._i2c_status():
