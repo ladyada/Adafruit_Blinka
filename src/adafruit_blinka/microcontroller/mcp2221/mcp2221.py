@@ -17,6 +17,7 @@ RESP_I2C_STOP_TOUT		=0x62
 
 RESP_I2C_MOREDATA		=0x43 # ???
 RESP_I2C_WRITINGDATA    =0x41 # ???
+RESP_I2C_WRITINGNOSTOP  =0x45 # ???
 
 MCP2221_RETRY_MAX		=50
 MCP2221_MAX_I2C_DATA_LEN	=60
@@ -130,21 +131,6 @@ class MCP2221:
         else:
             return resp[offset]
 
-    #----------------------------------------------------------------
-    # I2C
-    #
-    # cribbed from the C driver
-    # http://ww1.microchip.com/downloads/en/DeviceDoc/mcp2221_0_1.tar.gz
-    #   define RESP_I2C_IDLE           0x00
-    #   define RESP_I2C_START_TOUT     0x12
-    #   define RESP_I2C_RSTART_TOUT    0x17
-    #   define RESP_I2C_WRADDRL_TOUT   0x23
-    #   define RESP_I2C_WRADDRL_WSEND  0x21
-    #   define RESP_I2C_WRADDRL_NACK   0x25
-    #   define RESP_I2C_WRDATA_TOUT    0x44
-    #   define RESP_I2C_RDDATA_TOUT    0x52
-    #   define RESP_I2C_STOP_TOUT      0x62
-    #----------------------------------------------------------------
 
     def _i2c_status(self):
         resp = self._hid_xfer(b'\x10')
@@ -167,7 +153,8 @@ class MCP2221:
             time.sleep(0.001)
 
     def _i2c_write(self, cmd, address, buffer, start=0, end=None):
-        #print("* Writing I2C:", hex(cmd), hex(address), len(buffer))
+        #print("* Writing I2C cmd 0x%x addr $%02x size %d bytes" %
+        #      (cmd, address, len(buffer)))
         if self._i2c_state() != 0x00:
             self._i2c_cancel()
 
@@ -176,7 +163,8 @@ class MCP2221:
         retries = 0
 
         while (end - start) > 0:
-            #print("Writing chunk starting at", start, "retry", retries)
+            #print("Writing %d byte chunk starting at offset %d (try #%d)" %
+            #      (start, start, retries))
             chunk = min(end - start, MCP2221_MAX_I2C_DATA_LEN)
             # write out current chunk
             resp = self._hid_xfer(bytes([cmd,
@@ -198,6 +186,7 @@ class MCP2221:
                 time.sleep(0.001)
                 continue # try again
             # yay chunk sent!
+            #print("Sent!")
             while self._i2c_state() == RESP_I2C_WRITINGDATA:
                 time.sleep(0.001)
             start += chunk
@@ -212,6 +201,8 @@ class MCP2221:
             #print("* USB cmd state:", hex(usb_cmd_status))
             if usb_cmd_status == 0:
                 break
+            if usb_cmd_status == RESP_I2C_WRITINGNOSTOP and cmd == 0x94:
+                break   # this is OK too!
             if usb_cmd_status in (RESP_I2C_START_TOUT,
                                   RESP_I2C_WRADDRL_TOUT,
                                   RESP_I2C_WRADDRL_NACK,
