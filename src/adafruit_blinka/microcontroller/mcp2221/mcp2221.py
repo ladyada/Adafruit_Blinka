@@ -5,6 +5,7 @@ RESP_ERR_NOERR			=0x00
 RESP_ADDR_NACK			=0x25
 RESP_READ_ERR			=0x7F
 RESP_READ_COMPL			=0x55
+RESP_READ_PARTIAL       =0x54 # ???
 RESP_I2C_IDLE			=0x00
 RESP_I2C_START_TOUT		=0x12
 RESP_I2C_RSTART_TOUT	=0x17
@@ -16,7 +17,7 @@ RESP_I2C_RDDATA_TOUT	=0x52
 RESP_I2C_STOP_TOUT		=0x62
 
 RESP_I2C_MOREDATA		=0x43 # ???
-RESP_I2C_WRITINGDATA    =0x41 # ???
+RESP_I2C_PARTIALDATA    =0x41 # ???
 RESP_I2C_WRITINGNOSTOP  =0x45 # ???
 
 MCP2221_RETRY_MAX		=50
@@ -163,9 +164,9 @@ class MCP2221:
         retries = 0
 
         while (end - start) > 0:
-            #print("Writing %d byte chunk starting at offset %d (try #%d)" %
-            #      (start, start, retries))
             chunk = min(end - start, MCP2221_MAX_I2C_DATA_LEN)
+            #print("Writing %d byte chunk starting at offset %d (try #%d)" %
+            #      (chunk, start, retries))
             # write out current chunk
             resp = self._hid_xfer(bytes([cmd,
                                          length & 0xFF,
@@ -187,7 +188,7 @@ class MCP2221:
                 continue # try again
             # yay chunk sent!
             #print("Sent!")
-            while self._i2c_state() == RESP_I2C_WRITINGDATA:
+            while self._i2c_state() == RESP_I2C_PARTIALDATA:
                 time.sleep(0.001)
             start += chunk
             retries = 0
@@ -212,35 +213,61 @@ class MCP2221:
             time.sleep(0.001)
         else:
             raise RuntimeError("I2C write error: max retries reached.")
+        #print("Write success!")
         # whew success!
             
 
     def _i2c_read(self, cmd, address, buffer, start=0, end=None):
-        if self._i2c_status():
+        state = self._i2c_state()
+        if state not in (RESP_I2C_WRITINGNOSTOP, 0):
             self._i2c_cancel()
+
         end = end if end else len(buffer)
         length = end - start
-        retries = 0
+
+        #print("* Reading I2C cmd 0x%x addr $%02x size %d bytes" %
+        #      (cmd, address, length))
+
+        # tell it we want to read
+        resp = self._hid_xfer(bytes([cmd,
+                                     length & 0xFF,
+                                     (length >> 8) & 0xFF,
+                                     (address << 1) | 0x01]))
+        # check for success
+        if resp[1] != 0x00:
+            raise RuntimeError("Unrecoverable I2C read failure")
+
         while (end - start) > 0:
-            # tell it we want to read
-            resp = self._hid_xfer(bytes([cmd,
-                                         length & 0xFF,
-                                         (length >> 8) & 0xFF,
-                                         (address << 1) | 0x01]))
-            # and then actually read
-            resp = self._hid_xfer(b'\x40')
-            # check for success
-            if resp[1] != 0x00:
-                retries += 1
-                if retries >= 5:
-                    raise RuntimeError("I2C write error, max retries reached.")
-                time.sleep(0.001)
-                continue
+            for retry in range(MCP2221_RETRY_MAX):
+                #print("Reading chunk starting at offset %d (try #%d)" % (start, retry))
+                #time.sleep(0.01)
+                # and then actually read
+                resp = self._hid_xfer(b'\x40')
+                #print("response: ", [hex(i) for i in resp])
+                # check for success
+                if resp[1] == RESP_I2C_PARTIALDATA:
+                    time.sleep(0.001)
+                    continue
+                if resp[1] != 0x00:
+                    raise RuntimeError("Unrecoverable I2C read failure")
+                if resp[2] == RESP_ADDR_NACK:
+                    raise RuntimeError("I2C NACK")
+                if resp[3] == 0x00 and resp[2] == 0x00:
+                    break
+                if resp[3] == RESP_READ_ERR:
+                    time.sleep(0.001)
+                    continue
+                if resp[2] in (RESP_READ_COMPL, RESP_READ_PARTIAL):
+                    #print("read ", resp[3])
+                    break
+
             # move data into buffer
             chunk = min(end - start, 60)
             for i, k in enumerate(range(start, start+chunk)):
                 buffer[k] = resp[4 + i]
             start += chunk
+        
+
 
     def i2c_configure(self, baudrate=100000):
         self._hid_xfer(bytes([0x10,  # set parameters
